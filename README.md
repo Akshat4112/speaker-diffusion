@@ -25,8 +25,22 @@ There are 3 types of embeddings generated from LibreSpeech Corpus:
 
 ## Training
 ```bash
-python3 main.py
+python3 code/main.py
 ```
+
+The default run uses the bundled 64-dimensional embeddings, creates output directories
+under the repository, and disables W&B logging. The file named
+`embedding_vectors_as_list128.pt` also contains 64-dimensional vectors.
+For a quick end-to-end check with real data:
+
+```bash
+python3 code/main.py --epochs 2 --datapoints 64 --output-dir /tmp/speaker-diffusion-smoke
+```
+
+`--output-dir` receives `figures/` plots and a `GeneratedEmbeddings/` checkpoint
+containing the sampling trajectory. Set `WANDB_MODE=online` and configure your own
+W&B authentication to enable remote logging. The conditional model accepts an
+`input_dimension` argument; its default remains 128 for existing callers.
 
 ## Model
 

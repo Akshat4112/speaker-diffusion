@@ -18,13 +18,13 @@ class ConditionalLinear(nn.Module):
         return out
         
 class ConditionalModel(nn.Module):
-    def __init__(self, n_steps):
+    def __init__(self, n_steps, input_dimension=128):
         super(ConditionalModel, self).__init__()
-        self.lin1 = ConditionalLinear(128, 128, n_steps)
+        self.lin1 = ConditionalLinear(input_dimension, 128, n_steps)
         self.lin2 = ConditionalLinear(128, 264, n_steps)
         self.lin3 = ConditionalLinear(264, 128, n_steps)
         self.lin4 = ConditionalLinear(128, 100, n_steps)
-        self.lin5 = nn.Linear(100, 128)
+        self.lin5 = nn.Linear(100, input_dimension)
     
 
     def forward(self, x, y):

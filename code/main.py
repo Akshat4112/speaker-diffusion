@@ -1,5 +1,9 @@
-from distutils.command.config import config
-from unicodedata import name
+import argparse
+import os
+from pathlib import Path
+
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("WANDB_MODE", "disabled")
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from dataNormalize import dataNormalize
@@ -12,24 +16,30 @@ import wandb
 import torch
 import numpy as np
 
-wandb.init(project="DDM-Project")
-WANDB_API_KEY = 'ffe5b918b921d391434d044c9bc030bdef3d48de'
+ROOT = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description="Train diffusion on bundled speaker embeddings.")
+parser.add_argument("--epochs", type=int, default=1000)
+parser.add_argument("--datapoints", type=int, default=5000)
+parser.add_argument("--output-dir", type=Path, default=ROOT)
+args = parser.parse_args()
+if args.epochs < 1 or args.datapoints <= 20:
+    parser.error("epochs must be positive and datapoints must exceed t-SNE perplexity (20)")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# DATA_PATH = '../dataset/embedding_vectors_as_list.pt'
-# DATA_PATH = '../dataset/704dim_embeds.pt'
-DATA_PATH = '../dataset/expected_128.pt'
-
-name = '128_dimension_embedding_datapoints'
-list_of_embeddings =torch.load(DATA_PATH, map_location='cpu')
-print("Original Data has datapoints: ",len(list_of_embeddings))
-
-settings = { 
-    "datapoints": 5000,
+DATA_PATH = ROOT / "dataset" / "embedding_vectors_as_list64.pt"
+list_of_embeddings = torch.load(DATA_PATH, map_location="cpu")
+print("Original Data has datapoints: ", len(list_of_embeddings))
+settings = {
+    "datapoints": min(args.datapoints, len(list_of_embeddings)),
     "num_steps": 100,
     "batch_size": 64,
-    "input_dimension": 128
-    }
+    "input_dimension": 64,
+}
+name = '64_dimension_embedding_datapoints'
+figures_dir = args.output_dir / "figures"
+embeddings_dir = args.output_dir / "GeneratedEmbeddings"
+figures_dir.mkdir(parents=True, exist_ok=True)
+embeddings_dir.mkdir(parents=True, exist_ok=True)
+wandb.init(project="DDM-Project", dir=str(args.output_dir))
 
 wandb.config.datapoints = settings["datapoints"]
 wandb.config.num_steps = settings["num_steps"]
@@ -39,9 +49,11 @@ wandb.config.dimensions = settings["input_dimension"]
 embeddings = list_of_embeddings[:settings['datapoints']]
 b = torch.stack(embeddings)
 c = b.detach().numpy()
+if c.ndim != 2 or c.shape[1] != settings["input_dimension"]:
+    raise ValueError("Dataset dimensions do not match model input")
 c = dataNormalize(c)
 
-before_name = "../figures/"+"before" + str(name)
+before_name = str(figures_dir / ("before" + name + ".png"))
 c_PCA = TSNE(n_components=2, learning_rate='auto',init='random',random_state=0, perplexity=20).fit_transform(c)  
 fig, ax = plt.subplots(figsize=(10,8))
 ax.scatter(c_PCA[:,0], c_PCA[:,1], alpha=.5, color="r")
@@ -86,13 +98,13 @@ def q_posterior_mean_variance(x_0, x_t, t):
     var = extract(posterior_log_variance_clipped, t, x_0)
     return mean, var
 
-model = ConditionalModel(settings["num_steps"])
+model = ConditionalModel(settings["num_steps"], input_dimension=settings["input_dimension"])
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
 ema = EMA(0.9)
 ema.register(model)
 
-for t in range(1000):
+for t in range(args.epochs):
     permutation = torch.randperm(dataset.size()[0])
     for i in range(0, dataset.size()[0], settings["batch_size"]):
         indices = permutation[i:i+settings["batch_size"]]
@@ -107,20 +119,26 @@ for t in range(1000):
     if (t % 100 == 0):
         print(loss)
         wandb.log({"Loss": loss})
-        x_seq = p_sample_loop(model, dataset.shape,settings["num_steps"],alphas,betas,one_minus_alphas_bar_sqrt)
+        with torch.no_grad():
+            x_seq = p_sample_loop(model, dataset.shape,settings["num_steps"],alphas,betas,one_minus_alphas_bar_sqrt)
         fig, axs = plt.subplots(1, 10, figsize=(28, 3))
         for i in range(1, 11):
             cur_x = x_seq[i * 10].detach()
             axs[i-1].scatter(cur_x[:, 0], cur_x[:, 1],color='white',edgecolor='gray', s=5)
             axs[i-1].set_axis_off(); 
-            axs[i-1].set_title('$q(\mathbf{x}_{'+str(i*100)+'})$')
+            axs[i-1].set_title('Diffusion step ' + str(i * 10))
+        plt.close(fig)
     
-embedding_name = '../GeneratedEmbeddings/'+ str(name )
+# Generate from the final trained weights, including runs ending between log intervals.
+with torch.no_grad():
+    x_seq = p_sample_loop(model, dataset.shape, settings["num_steps"], alphas, betas, one_minus_alphas_bar_sqrt)
+cur_x = x_seq[-1]
+embedding_name = str(embeddings_dir / (name + ".pt"))
 torch.save(x_seq, embedding_name)
 d = cur_x.detach().numpy()
 d = dataNormalize(d)
 
-after_name = "../figures/"+"after" + str(name)
+after_name = str(figures_dir / ("after" + name + ".png"))
 
 d_PCA = TSNE(n_components=2, learning_rate='auto',init='random',random_state=0, perplexity=20).fit_transform(d)  
 fig, ax = plt.subplots(figsize=(10,8))
@@ -139,7 +157,7 @@ ax.scatter(c_PCA[:,0], c_PCA[:,1], alpha=.5, color='red')
 ax.scatter(d_PCA[:,0], d_PCA[:,1], alpha=.5, color='blue')
 plt_title = 'Scatter plot using t-SNE for ' + str(name)
 plt.title(plt_title)
-both_name = '../figures/'+'After DDM Both ' + str(name) + '.png'
+both_name = str(figures_dir / ("After DDM Both " + name + ".png"))
 plt.savefig(both_name)
 
 #Computing Mean Across Dimensions
@@ -187,3 +205,7 @@ print("Cosine Mean is: ", np.mean(cosine))
 
 
 
+
+plt.close("all")
+wandb.finish()
+print("Saved generated embeddings to:", embedding_name)
